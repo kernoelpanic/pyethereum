@@ -6,7 +6,7 @@ from ethereum.utils import to_string
 from ethereum.abi import is_string
 import copy
 from ethereum.utils import decode_hex, ascii_chr, str_to_bytes
-from ethereum.utils import encode_hex
+from ethereum.utils import encode_hex, sha3_256
 from ethereum.fast_rlp import encode_optimized
 rlp_encode = encode_optimized
 
@@ -832,6 +832,162 @@ class Trie(object):
                 nibbles = []
             key = nibbles_to_bin(without_terminator(nibbles))
             yield key, value
+
+
+    def _get_branch_to_key(self,
+                          node,
+                          key,
+                          key_idx=0,
+                          level=0,
+                          branch={}):
+        """
+        """
+        print("Node:\n",node)
+        print("Key:\n",key[ key_idx::])
+        node_type = self._get_node_type(node)
+        print("Type:\n",node_type)
+
+        assert node_type != NODE_TYPE_BLANK, "Illeagal start node"
+
+        if is_key_value_type(node_type):
+
+            if node_type == NODE_TYPE_EXTENSION:
+                print("extension node:")
+                # fast forward len nibbles from key
+                next_idx = key_idx + len(without_terminator(unpack_to_nibbles(node[0])))
+                print("Farst forward path prefix ",key[:next_idx])
+                assert node[ 1 ] == sha3_256(rlp.encode(self._decode_to_node(node[ 1 ])))
+                prove[level] = node
+                level += 1
+                return self._get_branch_to_key(self._decode_to_node(node[1]),
+                                               key,
+                                               next_idx,
+                                               level,
+                                               branch)
+            else:
+                print("leaf node:")
+                # Format:
+                # [(to_string(NIBBLE_TERMINATOR), node[1])]
+                branch[level] = node
+                assert key_idx == len(key), "Key length and path length do not match"
+                return branch
+
+        elif node_type == NODE_TYPE_BRANCH:
+            print("branch node:")
+            branch[level] = node
+            level += 1
+            next_idx = key_idx + 1
+            assert node[ key[key_idx] ] == sha3_256(rlp.encode(self._decode_to_node(node[ key[key_idx] ])))
+            return self._get_branch_to_key(self._decode_to_node(node[ key[key_idx] ]),
+                                           key,
+                                           next_idx,
+                                           level,
+                                           branch)
+        else:
+            assert False, "Invalid node type"
+
+
+    def create_trie_prove(self,key):
+        """
+        """
+        assert isinstance(key,(int,bytes)), "Key must be int (index) or bytes (address)"
+
+        key = rlp.encode(key) # encode since it is aussume to be given unencoded
+        assert len(self.get(key)) > 0, "Key has no associtated value"
+
+        # split key into list of nibbles, without terminator 16
+        key = without_terminator(bin_to_nibbles(key))
+
+        return self._get_branch_to_key(self.root_node,key)
+
+
+    def _verify_branch_to_key(self,
+                              branch,
+                              key,
+                              value_hash,
+                              last_hash=None,
+                              level=0,
+                              key_idx=0):
+        """
+        """
+        node = branch[ level ]
+        print("Node:\n",node)
+        node_type = self._get_node_type(node)
+        print("Type:\n",node_type)
+
+        if level > 0:
+            if sha3_256(rlp.encode(node)) != last_hash:
+                print("Hash mismatch!")
+                return False
+
+        if is_key_value_type(node_type):
+            if node_type == NODE_TYPE_EXTENSION:
+                print("verify extension node:")
+                # fast forward len nibbles from key
+                sub_key = without_terminator(unpack_to_nibbles(node[0]))
+
+                _sub_key_bytes = b''.join([to_string(x) for x in sub_key])
+                sub_key_bytes = b''.join([to_string(x) for x in key[key_idx:len(sub_key)] ])
+                assert sub_key_bytes == _sub_key_bytes
+
+                next_idx = key_idx + len(sub_key)
+                print("strip prefix",key[:next_idx])
+
+                last_hash = node[1]
+                level += 1
+                return self._verify_branch_to_key(branch,
+                                               key,
+                                               value_hash,
+                                               last_hash,
+                                               level,
+                                               next_idx)
+            else:
+                print("verify leaf node:")
+                if value_hash == sha3_256(node[1]):
+                    return True
+                else:
+                    return False
+
+        elif node_type == NODE_TYPE_BRANCH:
+            print("verify branch node:")
+            level += 1
+            last_hash = node[ key[key_idx] ]
+            next_idx = key_idx + 1
+            return self._verify_branch_to_key(branch,
+                                              key,
+                                              value_hash,
+                                              last_hash,
+                                              level,
+                                              next_idx)
+        else:
+            return False
+
+
+    def verify_trie_prove(self,trieprove,trieroot_hash,key,value=None,value_hash=None):
+        """
+        """
+        assert isinstance(trieprove,dict), "Trie inclusion prove as dict expected"
+        assert len(trieprove) > 0, "Trie inclusion prove must be non-empty"
+        if trieroot_hash != sha3_256(rlp.encode(trieprove[0])).hex():
+            print("Trie root hash does not match!")
+            return False
+
+        assert isinstance(key,(int,bytes)), "Key must be int (index) or bytes (address)"
+        key = rlp.encode(key) # encode since it is aussume to be given unencoded
+        # split key into list of nibbles, without terminator 16
+        key = without_terminator(bin_to_nibbles(key))
+
+        assert ( value is not None ) or ( value_hash is not None ), "Value or hash of value expected"
+        if value is not None:
+            _value_hash = sha3_256(value)
+            if ( value_hash is not None ) and _value_hash != value_hash:
+                print("Value hash does not match value!")
+                return False
+            else:
+                value_hash = _value_hash
+
+        return self._verify_branch_to_key(trieprove,key,value_hash)
+
 
     def _to_dict(self, node):
         """convert (key, value) stored in this and the descendant nodes
