@@ -839,33 +839,35 @@ class Trie(object):
                           key,
                           key_idx=0,
                           level=0,
-                          branch={}):
+                          branch=dict(),
+                          verbose=False):
         """
         """
-        print("Node:\n",node)
-        print("Key:\n",key[ key_idx::])
+        if verbose: print("Node:\n",node)
+        if verbose: print("Key:\n",key[ key_idx::])
         node_type = self._get_node_type(node)
-        print("Type:\n",node_type)
+        if verbose: print("Type:\n",node_type)
 
         assert node_type != NODE_TYPE_BLANK, "Illeagal start node"
 
         if is_key_value_type(node_type):
 
             if node_type == NODE_TYPE_EXTENSION:
-                print("extension node:")
+                if verbose: print("extension node:")
                 # fast forward len nibbles from key
                 next_idx = key_idx + len(without_terminator(unpack_to_nibbles(node[0])))
-                print("Farst forward path prefix ",key[:next_idx])
+                if verbose: print("Fast forward path prefix ",key[:next_idx])
                 assert node[ 1 ] == sha3_256(rlp.encode(self._decode_to_node(node[ 1 ])))
-                prove[level] = node
+                branch[level] = node
                 level += 1
                 return self._get_branch_to_key(self._decode_to_node(node[1]),
                                                key,
                                                next_idx,
                                                level,
-                                               branch)
+                                               branch,
+                                               verbose)
             else:
-                print("leaf node:")
+                if verbose: print("leaf node:")
                 # Format:
                 # [(to_string(NIBBLE_TERMINATOR), node[1])]
                 branch[level] = node
@@ -873,7 +875,7 @@ class Trie(object):
                 return branch
 
         elif node_type == NODE_TYPE_BRANCH:
-            print("branch node:")
+            if verbose: print("branch node:")
             branch[level] = node
             level += 1
             next_idx = key_idx + 1
@@ -882,12 +884,13 @@ class Trie(object):
                                            key,
                                            next_idx,
                                            level,
-                                           branch)
+                                           branch,
+                                           verbose)
         else:
             assert False, "Invalid node type"
 
 
-    def create_trie_prove(self,key):
+    def create_trie_prove(self,key,verbose=False):
         """
         """
         assert isinstance(key,(int,bytes)), "Key must be int (index) or bytes (address)"
@@ -898,7 +901,8 @@ class Trie(object):
         # split key into list of nibbles, without terminator 16
         key = without_terminator(bin_to_nibbles(key))
 
-        return self._get_branch_to_key(self.root_node,key)
+        # return copy of dict to avoid reusage of same dict
+        return self._get_branch_to_key(self.root_node,key,branch=dict(),verbose=verbose).copy()
 
 
     def _verify_branch_to_key(self,
@@ -907,13 +911,14 @@ class Trie(object):
                               value_hash,
                               last_hash=None,
                               level=0,
-                              key_idx=0):
+                              key_idx=0,
+                              verbose=False):
         """
         """
         node = branch[ level ]
-        print("Node:\n",node)
+        if verbose: print("Node:\n",node)
         node_type = self._get_node_type(node)
-        print("Type:\n",node_type)
+        if verbose: print("Type:\n",node_type)
 
         if level > 0:
             if sha3_256(rlp.encode(node)) != last_hash:
@@ -922,16 +927,18 @@ class Trie(object):
 
         if is_key_value_type(node_type):
             if node_type == NODE_TYPE_EXTENSION:
-                print("verify extension node:")
+                if verbose: print("verify extension node:")
                 # fast forward len nibbles from key
                 sub_key = without_terminator(unpack_to_nibbles(node[0]))
 
                 _sub_key_bytes = b''.join([to_string(x) for x in sub_key])
-                sub_key_bytes = b''.join([to_string(x) for x in key[key_idx:len(sub_key)] ])
+                sub_key_bytes = b''.join([to_string(x) for x in key[key_idx:key_idx+len(sub_key)] ])
+                #print("key: ",key," sub_key: ",sub_key, " key_idx: ",key_idx,
+                #      " ext_key_bytes: ",_sub_key_bytes," sub_key_bytes: ",sub_key_bytes)
                 assert sub_key_bytes == _sub_key_bytes
 
                 next_idx = key_idx + len(sub_key)
-                print("strip prefix",key[:next_idx])
+                if verbose: print("strip prefix",key[:next_idx])
 
                 last_hash = node[1]
                 level += 1
@@ -940,16 +947,17 @@ class Trie(object):
                                                value_hash,
                                                last_hash,
                                                level,
-                                               next_idx)
+                                               next_idx,
+                                               verbose)
             else:
-                print("verify leaf node:")
+                if verbose: print("verify leaf node:")
                 if value_hash == sha3_256(node[1]):
                     return True
                 else:
                     return False
 
         elif node_type == NODE_TYPE_BRANCH:
-            print("verify branch node:")
+            if verbose: print("verify branch node:")
             level += 1
             last_hash = node[ key[key_idx] ]
             next_idx = key_idx + 1
@@ -958,12 +966,13 @@ class Trie(object):
                                               value_hash,
                                               last_hash,
                                               level,
-                                              next_idx)
+                                              next_idx,
+                                              verbose)
         else:
             return False
 
 
-    def verify_trie_prove(self,trieprove,trieroot_hash,key,value=None,value_hash=None):
+    def verify_trie_prove(self,trieprove,trieroot_hash,key,value=None,value_hash=None,verbose=False):
         """
         """
         assert isinstance(trieprove,dict), "Trie inclusion prove as dict expected"
@@ -986,7 +995,7 @@ class Trie(object):
             else:
                 value_hash = _value_hash
 
-        return self._verify_branch_to_key(trieprove,key,value_hash)
+        return self._verify_branch_to_key(trieprove,key,value_hash,verbose=verbose)
 
 
     def _to_dict(self, node):
